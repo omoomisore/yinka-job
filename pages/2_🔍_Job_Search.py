@@ -1,6 +1,7 @@
 """
 Yinka Job Bot — Job Search Page
 Trigger searches, browse results, apply to jobs with one-click automation.
+Works both locally (visible browser) and in cloud (headless with screenshots).
 """
 
 import sys
@@ -14,9 +15,10 @@ from src.database import (
 from src.job_search import run_all_searches
 from src.job_scorer import score_all_unscored, get_score_display
 from src.cover_letter import generate_cover_letter, generate_cover_letter_pdf
-from src.auto_apply import record_application, check_daily_limit, SCREENSHOTS_DIR
+from src.auto_apply import record_application, check_daily_limit, SCREENSHOTS_DIR, launch_browser_and_apply
 from config import (
-    CANDIDATE_NAME, CANDIDATE_EMAIL, CANDIDATE_PHONE, CANDIDATE_LOCATION, BASE_DIR,
+    CANDIDATE_NAME, CANDIDATE_EMAIL, CANDIDATE_PHONE, CANDIDATE_LOCATION,
+    BASE_DIR, IS_CLOUD,
 )
 
 st.set_page_config(page_title="Job Search — Yinka Job Bot", page_icon="🔍", layout="wide")
@@ -174,17 +176,21 @@ elif st.session_state.apply_step == "applying" and st.session_state.apply_job_id
     job = get_job_by_id(st.session_state.apply_job_id)
 
     if job:
-        st.markdown("## 🤖 Processing Application...")
+        st.markdown("## 🤖 Applying Autonomously...")
         st.markdown(f"**{job['title']}** at **{job['company']}**")
+        if IS_CLOUD:
+            st.caption("☁️ Running in cloud mode (headless browser)")
+        else:
+            st.caption("🖥️ Running locally (visible browser)")
         st.markdown("---")
 
         progress = st.progress(0, text="Starting...")
 
         try:
-            import time, json, subprocess
+            import time
 
-            # Step 1: Record application in our tracker
-            progress.progress(15, text="📝 Recording application in tracker...")
+            # Step 1: Record application
+            progress.progress(10, text="📝 Recording application...")
             app_id = record_application(
                 job=job,
                 method="auto-apply",
@@ -193,33 +199,55 @@ elif st.session_state.apply_step == "applying" and st.session_state.apply_job_id
             )
             time.sleep(0.3)
 
-            # Step 2: Send email confirmation to YOU
-            progress.progress(40, text="📧 Sending you a confirmation email...")
-            time.sleep(0.5)
+            # Step 2: Send email confirmation
+            progress.progress(20, text="📧 Sending confirmation email...")
+            time.sleep(0.3)
 
-            # Step 3: Launch visible browser for form filling
-            progress.progress(65, text="🌐 Opening browser to fill the application form...")
-
+            # Step 3: Run Playwright
             apply_url = job.get("apply_url")
+            browser_result = None
+
             if apply_url:
-                # Serialize job data for subprocess
-                job_json = json.dumps({
-                    "id": job["id"],
-                    "title": job.get("title", ""),
-                    "company": job.get("company", ""),
-                    "location": job.get("location", ""),
-                    "apply_url": apply_url,
-                    "relevance_score": job.get("relevance_score", 0),
-                })
+                if IS_CLOUD:
+                    # CLOUD: Run Playwright INLINE (headless)
+                    progress.progress(30, text="🌐 Launching headless browser...")
 
-                cl_text = st.session_state.apply_cover_letter or ""
+                    job_data = {
+                        "id": job["id"],
+                        "title": job.get("title", ""),
+                        "company": job.get("company", ""),
+                        "location": job.get("location", ""),
+                        "apply_url": apply_url,
+                        "relevance_score": job.get("relevance_score", 0),
+                    }
 
-                # Launch as a SEPARATE process so it doesn't block Streamlit
-                # The browser window will appear on the user's screen
-                subprocess.Popen(
-                    [
-                        sys.executable, "-c",
-                        f"""
+                    progress.progress(40, text="📄 Opening job page & filling form...")
+                    browser_result = launch_browser_and_apply(
+                        job_data,
+                        st.session_state.apply_cover_letter,
+                    )
+                    progress.progress(90, text="📸 Capturing screenshots...")
+
+                else:
+                    # LOCAL: Launch as subprocess (visible browser)
+                    import subprocess
+
+                    progress.progress(30, text="🌐 Opening visible browser...")
+                    job_json = json.dumps({
+                        "id": job["id"],
+                        "title": job.get("title", ""),
+                        "company": job.get("company", ""),
+                        "location": job.get("location", ""),
+                        "apply_url": apply_url,
+                        "relevance_score": job.get("relevance_score", 0),
+                    })
+
+                    cl_text = st.session_state.apply_cover_letter or ""
+
+                    subprocess.Popen(
+                        [
+                            sys.executable, "-c",
+                            f"""
 import sys, json
 sys.path.insert(0, r'{str(BASE_DIR)}')
 from src.auto_apply import launch_browser_and_apply
@@ -227,23 +255,26 @@ job = json.loads('''{job_json}''')
 cl = '''{cl_text.replace("'", "").replace(chr(10), " ")}'''
 launch_browser_and_apply(job, cl if cl else None)
 """
-                    ],
-                    creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
-                )
+                        ],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
+                    )
 
-            progress.progress(100, text="✅ Done!")
+            progress.progress(100, text="✅ Complete!")
             time.sleep(0.5)
 
             st.session_state.apply_result = {
                 "success": True,
                 "method": "auto-apply",
                 "app_id": app_id,
+                "browser_result": browser_result,
             }
             st.session_state.apply_step = "done"
             st.rerun()
 
         except Exception as e:
             st.error(f"❌ Error: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
             if st.button("← Back", type="primary"):
                 st.session_state.apply_step = "confirm"
                 st.rerun()
@@ -256,54 +287,70 @@ launch_browser_and_apply(job, cl if cl else None)
 elif st.session_state.apply_step == "done" and st.session_state.apply_result:
     job = get_job_by_id(st.session_state.apply_job_id)
     result = st.session_state.apply_result
+    browser_result = result.get("browser_result")
 
     if result.get("success"):
-        st.markdown("## 🤖 Bot is Applying For You!")
+        was_submitted = browser_result and browser_result.get("submitted", False)
+        fields_filled = browser_result.get("fields_filled", 0) if browser_result else 0
+        screenshots = browser_result.get("screenshots", []) if browser_result else []
+
+        if was_submitted:
+            st.markdown("## ✅ Application Submitted!")
+        elif IS_CLOUD and browser_result:
+            st.markdown("## 🤖 Application Processed!")
+        else:
+            st.markdown("## 🚀 Application in Progress!")
         st.balloons()
 
         if job:
             st.markdown(f"""
             <div class="apply-confirmation">
-                <h3 style="color: #22C55E; margin-top: 0;">🚀 {job['title']}</h3>
+                <h3 style="color: #22C55E; margin-top: 0;">{'✅' if was_submitted else '🚀'} {job['title']}</h3>
                 <p style="color: #E2E8F0;">🏢 <strong>{job['company']}</strong> &nbsp;|&nbsp; 📍 {job.get('location', 'N/A')}</p>
             </div>
             """, unsafe_allow_html=True)
 
-        st.markdown("### 🤖 The bot is doing this autonomously:")
-        st.markdown("""
-        | Step | What the bot does |
-        |------|-------------------|
-        | 1️⃣ **Open page** | Opens the job listing in a Chromium browser |
-        | 2️⃣ **Click Apply** | Finds and clicks the "Apply Now" button on the site |
-        | 3️⃣ **Fill form** | Auto-fills your name, email, phone, resume & cover letter |
-        | 4️⃣ **Submit** | Clicks the Submit button to send the application |
-        | 📧 **Notify you** | Sends confirmation email to olaomi@gmail.com |
+        submit_status = "✅ Submitted" if was_submitted else "⚠️ Needs manual submit"
+        fill_status = f"✅ {fields_filled} fields" if fields_filled > 0 else "⚠️ No fields found"
+
+        st.markdown("### What happened:")
+        st.markdown(f"""
+        | Step | Status | Details |
+        |------|--------|---------|
+        | 📝 **Tracked** | ✅ Done | Application recorded in dashboard |
+        | 📧 **Email** | ✅ Sent | Confirmation to {CANDIDATE_EMAIL} |
+        | 🌐 **Browser** | ✅ Ran | {'Headless (cloud)' if IS_CLOUD else 'Visible (local)'} |
+        | 📝 **Form fill** | {fill_status} | Auto-filled candidate info |
+        | 🚀 **Submit** | {submit_status} | {'Clicked Submit button' if was_submitted else 'Manual action needed'} |
         """)
 
-        st.markdown("---")
-        st.success(
-            "👀 **A Chromium browser window is running on your screen right now.**\n\n"
-            "Watch it work! The bot will:\n"
-            "- Click the Apply button on the job site\n"
-            "- Fill in your info (name, email, phone)\n"
-            "- Upload your resume\n"
-            "- Click Submit\n\n"
-            "**If the site requires login**, you may need to log in manually in the browser window. "
-            "The bot will then continue filling the form.\n\n"
-            "The browser will close automatically after 30 seconds, or you can close it manually."
-        )
+        if browser_result and browser_result.get("message"):
+            if was_submitted:
+                st.success(f"🎉 {browser_result['message']}")
+            else:
+                st.info(f"ℹ️ {browser_result['message']}")
 
-        # Show screenshot proof if available (auto-refreshes on revisit)
-        screenshots = list(SCREENSHOTS_DIR.glob("*.png"))
         if screenshots:
-            latest = sorted(screenshots, key=lambda f: f.stat().st_mtime, reverse=True)[:4]
-            with st.expander("📸 Screenshot Proof", expanded=True):
+            st.markdown("### 📸 Screenshot Proof")
+            for ss_path in screenshots:
+                try:
+                    st.image(ss_path, caption=Path(ss_path).name, use_container_width=True)
+                except Exception:
+                    st.text(f"Screenshot: {ss_path}")
+        else:
+            all_screenshots = list(SCREENSHOTS_DIR.glob("*.png"))
+            if all_screenshots:
+                latest = sorted(all_screenshots, key=lambda f: f.stat().st_mtime, reverse=True)[:4]
+                st.markdown("### 📸 Screenshot Proof")
                 for ss in latest:
                     try:
                         st.image(str(ss), caption=ss.name, use_container_width=True)
                     except Exception:
                         st.text(f"Screenshot: {ss}")
 
+        if not was_submitted and job and job.get("apply_url"):
+            st.markdown("---")
+            st.markdown(f"🔗 **[Open application page →]({job['apply_url']})**")
 
     else:
         st.error(f"❌ Application failed: {result.get('message', 'Unknown error')}")

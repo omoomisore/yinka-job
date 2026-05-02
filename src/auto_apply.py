@@ -1,25 +1,27 @@
 """
 Yinka Job Bot — Auto-Apply Engine
 Uses Playwright browser automation to FULLY apply to jobs autonomously.
-Opens the page → clicks Apply → fills the form → submits → takes proof screenshots.
+Works both locally (visible browser) and in the cloud (headless with screenshots).
 """
 
 import sys
+import os
 import time
 import re
 import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from config import (
     CANDIDATE_NAME, CANDIDATE_EMAIL, CANDIDATE_PHONE, CANDIDATE_LOCATION,
-    RESUME_PDF_PATH, BASE_DIR, MAX_APPLICATIONS_PER_DAY,
+    RESUME_PDF_PATH, MAX_APPLICATIONS_PER_DAY, IS_CLOUD, DATA_DIR,
 )
 from src.database import insert_application, update_job_status, get_all_applications, get_cover_letter
 from src.notifier import send_application_confirmation
 
 
 # Directory for screenshots
-SCREENSHOTS_DIR = BASE_DIR / "data" / "screenshots"
+SCREENSHOTS_DIR = DATA_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Candidate info for form filling
@@ -86,6 +88,26 @@ SUBMIT_BUTTON_SELECTORS = [
 ]
 
 
+def _ensure_playwright_installed():
+    """Install Playwright browsers if not already installed (needed for cloud)."""
+    if IS_CLOUD:
+        browser_path = Path.home() / ".cache" / "ms-playwright"
+        if not browser_path.exists():
+            print("📦 Installing Playwright Chromium (first run)...")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "playwright", "install", "chromium"],
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
+                )
+                print("✅ Playwright Chromium installed!")
+            except Exception as e:
+                print(f"⚠️ Could not install Playwright: {e}")
+                return False
+    return True
+
+
 def check_daily_limit():
     """Check if we've hit the daily application limit."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -120,12 +142,9 @@ def _take_screenshot(page, stage, job):
 
 def launch_browser_and_apply(job, cover_letter_text=None):
     """
-    Launch a VISIBLE browser and FULLY apply to the job autonomously:
-    1. Open the job listing page
-    2. Find and click the "Apply" button on the site
-    3. Fill in all form fields (name, email, phone, resume, cover letter)
-    4. Click Submit
-    5. Take screenshots as proof
+    Launch a browser and FULLY apply to the job autonomously.
+    - Local: visible browser, user can watch
+    - Cloud: headless browser, screenshots shown in UI
 
     Args:
         job: Job dictionary
@@ -134,6 +153,14 @@ def launch_browser_and_apply(job, cover_letter_text=None):
     Returns:
         Dictionary with results including screenshots
     """
+    # Ensure Playwright is installed
+    if not _ensure_playwright_installed():
+        return {
+            "success": False, "submitted": False,
+            "message": "Playwright not available. Use the Apply URL directly.",
+            "fields_filled": 0, "screenshots": [],
+        }
+
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
     apply_url = job.get("apply_url")
@@ -149,17 +176,21 @@ def launch_browser_and_apply(job, cover_letter_text=None):
         "screenshots": [],
     }
 
+    # Cloud = headless, Local = visible
+    headless = IS_CLOUD
+
     try:
         with sync_playwright() as p:
             print(f"\n{'='*60}")
             print(f"🚀 AUTO-APPLY: {job.get('title')}")
             print(f"   Company: {job.get('company')}")
+            print(f"   Mode: {'☁️ Cloud (headless)' if headless else '🖥️ Local (visible)'}")
             print(f"   URL: {apply_url}")
             print(f"{'='*60}")
 
             browser = p.chromium.launch(
-                headless=False,
-                slow_mo=200,
+                headless=headless,
+                slow_mo=200 if not headless else 50,
             )
 
             context = browser.new_context(
@@ -185,13 +216,13 @@ def launch_browser_and_apply(job, cover_letter_text=None):
 
                 if apply_clicked:
                     print("  ✅ Clicked Apply button — waiting for form to load...")
-                    time.sleep(4)  # Wait for application form to load
+                    time.sleep(4)
 
                     ss = _take_screenshot(page, "2_form_loaded", job)
                     if ss:
                         result["screenshots"].append(ss)
                 else:
-                    print("  ℹ️ No Apply button found — page may already be the application form")
+                    print("  ℹ️ No Apply button found — page may already be the form")
 
                 # ── STEP 3: Fill in all form fields ──
                 print("\n📝 Step 3: Filling in application form...")
@@ -211,43 +242,42 @@ def launch_browser_and_apply(job, cover_letter_text=None):
                     submitted = _click_submit_button(page)
 
                     if submitted:
-                        time.sleep(4)  # Wait for confirmation page
+                        time.sleep(4)
                         ss = _take_screenshot(page, "4_submitted", job)
                         if ss:
                             result["screenshots"].append(ss)
                         result["submitted"] = True
                         result["success"] = True
-                        result["message"] = f"✅ Application SUBMITTED! {fields_filled} fields filled automatically."
-                        print(f"\n  🎉 APPLICATION SUBMITTED SUCCESSFULLY!")
+                        result["message"] = f"✅ Application SUBMITTED! {fields_filled} fields filled."
+                        print(f"\n  🎉 APPLICATION SUBMITTED!")
                     else:
                         result["success"] = True
                         result["submitted"] = False
                         result["message"] = (
-                            f"Form filled ({fields_filled} fields) but could not find Submit button. "
-                            f"Please click Submit in the browser window."
+                            f"Form filled ({fields_filled} fields) but Submit button not found. "
+                            f"{'Check the browser window.' if not headless else 'See screenshots below.'}"
                         )
-                        print(f"\n  ⚠️ Filled form but couldn't find Submit. Please submit manually.")
+                        print(f"\n  ⚠️ Filled form but couldn't find Submit.")
                 else:
-                    # No fields found — site might need login or is too complex
                     result["success"] = True
                     result["submitted"] = False
                     result["message"] = (
                         "Page opened but no form fields detected. "
-                        "The site may require login first. Please complete manually."
+                        "The site may require login first."
                     )
-                    print(f"\n  ⚠️ No form fields found. Site may need login.")
+                    print(f"\n  ⚠️ No form fields found.")
 
-                # Keep browser open briefly for user to verify
-                print(f"\n  👀 Browser staying open for 30 seconds for you to verify...")
-                print(f"  (Close the window manually if done sooner)")
-                try:
-                    page.wait_for_event("close", timeout=30000)
-                except Exception:
-                    pass
+                # Keep browser open for user to verify (local only)
+                if not headless:
+                    print(f"\n  👀 Browser staying open for 30 seconds...")
+                    try:
+                        page.wait_for_event("close", timeout=30000)
+                    except Exception:
+                        pass
 
             except PlaywrightTimeout:
                 result["success"] = True
-                result["message"] = "Page loaded slowly. Please check the browser window."
+                result["message"] = "Page loaded slowly. Check screenshots."
 
             except Exception as e:
                 result["message"] = f"Error: {str(e)}"
@@ -261,7 +291,7 @@ def launch_browser_and_apply(job, cover_letter_text=None):
                     pass
 
             print(f"\n{'='*60}")
-            print(f"RESULT: {'SUBMITTED ✅' if result['submitted'] else 'NEEDS MANUAL SUBMIT ⚠️'}")
+            print(f"RESULT: {'SUBMITTED ✅' if result['submitted'] else 'NEEDS REVIEW ⚠️'}")
             print(f"Fields filled: {result['fields_filled']}")
             print(f"Screenshots: {len(result['screenshots'])}")
             print(f"{'='*60}\n")
@@ -285,7 +315,7 @@ def _click_apply_button(page):
         except Exception:
             continue
 
-    # Try finding by text content as fallback
+    # Fallback: find by text content
     try:
         links = page.query_selector_all("a, button")
         for link in links:
@@ -308,7 +338,6 @@ def _auto_fill_form(page, cover_letter_text=None):
     """Detect and fill form fields on the page."""
     fields_filled = 0
 
-    # Get all visible form elements
     inputs = page.query_selector_all("input:visible, textarea:visible, select:visible")
     print(f"  🔍 Found {len(inputs)} form elements")
 
@@ -321,14 +350,12 @@ def _auto_fill_form(page, cover_letter_text=None):
             field_label = ""
             field_aria = (element.get_attribute("aria-label") or "").lower()
 
-            # Try to find associated label
             elem_id = element.get_attribute("id")
             if elem_id:
                 label_el = page.query_selector(f"label[for='{elem_id}']")
                 if label_el:
                     field_label = (label_el.inner_text() or "").lower()
 
-            # Also check parent label
             if not field_label:
                 try:
                     parent = element.evaluate("el => el.closest('label')?.innerText || ''")
@@ -338,22 +365,19 @@ def _auto_fill_form(page, cover_letter_text=None):
 
             combined = f"{field_name} {field_id} {field_placeholder} {field_label} {field_aria}"
 
-            # Skip non-fillable types
             if field_type in ["hidden", "submit", "button", "checkbox", "radio", "image"]:
                 continue
 
-            # File upload → upload resume
             if field_type == "file":
                 if RESUME_PDF_PATH.exists():
                     try:
                         element.set_input_files(str(RESUME_PDF_PATH))
                         fields_filled += 1
-                        print(f"  ✅ Uploaded: resume (yinka_resume.pdf)")
+                        print(f"  ✅ Uploaded: resume")
                     except Exception:
                         pass
                 continue
 
-            # Skip already-filled fields
             try:
                 current_val = element.input_value()
                 if current_val and len(current_val.strip()) > 2:
@@ -361,7 +385,6 @@ def _auto_fill_form(page, cover_letter_text=None):
             except Exception:
                 continue
 
-            # Match field to candidate data
             value_to_fill = None
             field_display = ""
 
@@ -428,7 +451,6 @@ def _click_submit_button(page):
         except Exception:
             continue
 
-    # Fallback: find any button/link with submit-like text
     try:
         buttons = page.query_selector_all("button:visible, input[type='submit']:visible")
         for btn in buttons:
@@ -464,7 +486,6 @@ def record_application(job, method="auto-apply", cover_letter_text=None, screens
         notes=notes,
     )
 
-    # Send email confirmation
     try:
         send_application_confirmation(job, cover_letter_text)
     except Exception as e:

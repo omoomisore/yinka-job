@@ -1,41 +1,67 @@
 """
 Yinka Job Bot — Configuration
 Central configuration for job search criteria, profile, and application preferences.
+Works both locally and on Streamlit Community Cloud.
 """
 
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables from .env (local only)
 load_dotenv(override=True)
 
 # ============================================================
-# Paths
+# Environment Detection
+# ============================================================
+IS_CLOUD = os.environ.get("STREAMLIT_SHARING_MODE") is not None or \
+           os.environ.get("STREAMLIT_SERVER_ADDRESS") is not None or \
+           os.path.exists("/mount/src")  # Streamlit Cloud mounts code here
+
+# ============================================================
+# Paths — use /tmp on cloud (read-only filesystem)
 # ============================================================
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-RESUME_DIR = BASE_DIR / "resume"
-DATA_DIR.mkdir(exist_ok=True)
-RESUME_DIR.mkdir(exist_ok=True)
+
+if IS_CLOUD:
+    DATA_DIR = Path("/tmp/yinka_job_data")
+    RESUME_DIR = BASE_DIR / "resume"
+else:
+    DATA_DIR = BASE_DIR / "data"
+    RESUME_DIR = BASE_DIR / "resume"
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+RESUME_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "jobs.db"
 RESUME_TEXT_PATH = RESUME_DIR / "yinka_resume.txt"
 RESUME_PDF_PATH = RESUME_DIR / "yinka_resume.pdf"
 
 # ============================================================
-# API Keys
+# API Keys — check Streamlit secrets first, then .env
 # ============================================================
-SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "olaomi@gmail.com")
+def _get_secret(key, default=""):
+    """Get a secret from Streamlit secrets (cloud) or env vars (local)."""
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
+
+SERPAPI_KEY = _get_secret("SERPAPI_KEY")
+OPENAI_API_KEY = _get_secret("OPENAI_API_KEY")
+GEMINI_API_KEY = _get_secret("GEMINI_API_KEY")
+ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY")
+SMTP_EMAIL = _get_secret("SMTP_EMAIL")
+SMTP_PASSWORD = _get_secret("SMTP_PASSWORD")
+NOTIFICATION_EMAIL = _get_secret("NOTIFICATION_EMAIL", "olaomi@gmail.com")
 
 # AI Provider: "anthropic", "gemini", or "openai"
-AI_PROVIDER = os.getenv("AI_PROVIDER", "anthropic")
+AI_PROVIDER = _get_secret("AI_PROVIDER", "anthropic")
 
 # ============================================================
 # Candidate Profile
