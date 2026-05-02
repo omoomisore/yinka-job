@@ -1,0 +1,31 @@
+# Yinka Job Application Bot - Dependencies
+# Core
+streamlit>=1.40.0
+python-dotenv>=1.0.0
+
+# Job Search
+google-search-results>=2.4.2   # SerpAPI client
+
+# AI Providers
+anthropic>=0.30.0              # Claude (primary)
+openai>=1.50.0                 # OpenAI (fallback)
+google-genai>=1.0.0            # Gemini (fallback)
+
+# Browser Automation (auto-apply)
+playwright>=1.40.0
+
+# Data & Visualization
+plotly>=5.22.0
+pandas>=2.2.0
+
+# PDF Generation (cover letters)
+fpdf2>=2.8.0
+
+# Email
+# (uses built-in smtplib, no extra dependency)
+
+# Scheduling
+apscheduler>=3.10.0
+
+# Utilities
+python-dateutil>=2.9.0

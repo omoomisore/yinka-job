@@ -1,0 +1,53 @@
+# ============================================================
+# Yinka Job Bot — .gitignore
+# ============================================================
+
+# Environment & Secrets
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Data (local DB, screenshots, browser state)
+data/jobs.db
+data/screenshots/
+data/browser_state/
+data/cover_letters/
+
+# Resume (personal documents)
+resume/
+52emuseR.pdf
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test files
+test_*.py
+
+# Logs
+*.log
